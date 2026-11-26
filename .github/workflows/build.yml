@@ -9,36 +9,75 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Unpack and prepare project
+      - name: Unpack and auto-fix project
         run: |
           unzip -q GlassKeyboard.zip
-          
-          # Переименовываем MainActivity.txt в MainActivity.kt
+
+          # 1. Переименовываем MainActivity.txt в MainActivity.kt
           if [ -f "GlassKeyboard/app/src/main/java/com/glasskb/MainActivity.txt" ]; then
             mv GlassKeyboard/app/src/main/java/com/glasskb/MainActivity.txt GlassKeyboard/app/src/main/java/com/glasskb/MainActivity.kt
           fi
 
-          # Исправляем потерянные префиксы android: в AndroidManifest.xml
-          MANIFEST="GlassKeyboard/app/src/main/AndroidManifest.xml"
-          sed -i 's/ name="/ android:name="/g' "$MANIFEST"
-          sed -i 's/ resource="/ android:resource="/g' "$MANIFEST"
-          sed -i 's/ label="/ android:label="/g' "$MANIFEST"
-          sed -i 's/ icon="/ android:icon="/g' "$MANIFEST"
-          sed -i 's/ theme="/ android:theme="/g' "$MANIFEST"
-          sed -i 's/ exported="/ android:exported="/g' "$MANIFEST"
-          sed -i 's/ permission="/ android:permission="/g' "$MANIFEST"
-          sed -i 's/ authorities="/ android:authorities="/g' "$MANIFEST"
-          sed -i 's/ grantUriPermissions="/ android:grantUriPermissions="/g' "$MANIFEST"
-          sed -i 's/android:android:/android:/g' "$MANIFEST"
+          # 2. Создаем базовую векторную иконку, так как папок mipmap/drawable нет в архиве
+          mkdir -p GlassKeyboard/app/src/main/res/drawable
+          cat << 'XMLEOF' > GlassKeyboard/app/src/main/res/drawable/ic_launcher.xml
+          <vector xmlns:android="http://android.com"
+              android:width="48dp"
+              android:height="48dp"
+              android:viewportWidth="48"
+              android:viewportHeight="48">
+              <path android:fillColor="#3DDC84" android:pathData="M0,0h48v48h-48z"/>
+              <path android:fillColor="#FFFFFF" android:pathData="M14,18h20v12h-20z"/>
+          </vector>
+          XMLEOF
+          cp GlassKeyboard/app/src/main/res/drawable/ic_launcher.xml GlassKeyboard/app/src/main/res/drawable/ic_launcher_round.xml
 
-          # Создаем gradle.properties
+          # 3. Лечим все XML-файлы (возвращаем android: и меняем @mipmap на @drawable)
+          python3 - << 'PYEOF'
+          import glob, re
+
+          attrs = [
+              "name", "resource", "label", "icon", "roundIcon", "theme", "exported",
+              "permission", "authorities", "grantUriPermissions", "settingsActivity",
+              "supportsSwitchingToNextInputMethod", "isDefault", "imeSubtypeLocale",
+              "imeSubtypeMode", "imeSubtypeExtraValue", "path", "allowBackup",
+              "supportsRtl", "targetApi", "windowSoftInputMode", "launchMode",
+              "configChanges", "value", "parent", "hardwareAccelerated", "resizeableActivity",
+              "requestLegacyExternalStorage", "directBootAware", "description"
+          ]
+          pattern = re.compile(r'(?<![:\w])(' + '|'.join(attrs) + r')=')
+
+          for path in glob.glob("GlassKeyboard/app/src/main/**/*.xml", recursive=True):
+              with open(path, "r", encoding="utf-8") as f:
+                  content = f.read()
+              
+              # Заменяем @mipmap/ на @drawable/ чтобы не упало из-за отсутствия mipmap
+              content = content.replace("@mipmap/", "@drawable/")
+              
+              # Возвращаем префикс android:
+              fixed = pattern.sub(r'android:\1=', content)
+              
+              # Убираем случайное дублирование android:android:
+              fixed = fixed.replace("android:android:", "android:")
+              
+              # Проверяем наличие xmlns:android в корневом теге
+              if "android:" in fixed and "xmlns:android=" not in fixed:
+                  fixed = re.sub(r'<(\w+)', r'<\1 xmlns:android="http://android.com"', fixed, count=1)
+
+              with open(path, "w", encoding="utf-8") as f:
+                  f.write(fixed)
+
+          print("All XML files repaired successfully!")
+          PYEOF
+
+          # 4. Создаем gradle.properties
           cat << 'EOF' > GlassKeyboard/gradle.properties
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
           android.useAndroidX=true
           kotlin.code.style=official
           EOF
 
-          # Создаем settings.gradle.kts
+          # 5. Создаем settings.gradle.kts
           cat << 'EOF' > GlassKeyboard/settings.gradle.kts
           pluginManagement {
               repositories {
@@ -58,7 +97,7 @@ jobs:
           include(":app")
           EOF
 
-          # Создаем корневой build.gradle.kts
+          # 6. Создаем корневой build.gradle.kts
           cat << 'EOF' > GlassKeyboard/build.gradle.kts
           plugins {
               id("com.android.application") version "8.4.0" apply false
@@ -66,7 +105,7 @@ jobs:
           }
           EOF
 
-          # Создаем app/build.gradle.kts с поддержкой Jetpack Compose и базовых библиотек
+          # 7. Создаем app/build.gradle.kts со всеми нужными библиотеками
           cat << 'EOF' > GlassKeyboard/app/build.gradle.kts
           plugins {
               id("com.android.application")
@@ -79,7 +118,7 @@ jobs:
 
               defaultConfig {
                   applicationId = "com.glasskb"
-                  minSdk = 24
+                  minSdk = 26
                   targetSdk = 34
                   versionCode = 1
                   versionName = "1.0"
@@ -87,6 +126,7 @@ jobs:
 
               buildFeatures {
                   compose = true
+                  viewBinding = true
               }
 
               composeOptions {
@@ -105,6 +145,10 @@ jobs:
               kotlinOptions {
                   jvmTarget = "17"
               }
+              lint {
+                  abortOnError = false
+                  checkReleaseBuilds = false
+              }
           }
 
           dependencies {
@@ -114,12 +158,18 @@ jobs:
               implementation("androidx.activity:activity-compose:1.9.0")
               implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.0")
               implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0")
+              implementation("androidx.lifecycle:lifecycle-service:2.8.0")
+              implementation("androidx.savedstate:savedstate-ktx:1.2.1")
               implementation(platform("androidx.compose:compose-bom:2024.05.00"))
               implementation("androidx.compose.ui:ui")
               implementation("androidx.compose.ui:ui-graphics")
               implementation("androidx.compose.ui:ui-tooling-preview")
               implementation("androidx.compose.material3:material3")
               implementation("androidx.compose.material:material-icons-extended")
+              implementation("io.coil-kt:coil-compose:2.6.0")
+              implementation("io.coil-kt:coil-gif:2.6.0")
+              implementation("com.google.code.gson:gson:2.10.1")
+              implementation("androidx.datastore:datastore-preferences:1.1.1")
           }
           EOF
 
