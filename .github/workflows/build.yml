@@ -1,27 +1,119 @@
 name: Build APK
+
 on: [push, workflow_dispatch]
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Unpack ZIP
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Unpack and prepare project
         run: |
           unzip -q GlassKeyboard.zip
-          if [ -d "GlassKeyboard" ]; then
-            cp -rn GlassKeyboard/* .
+          
+          # Переименовываем MainActivity.txt в MainActivity.kt
+          if [ -f "GlassKeyboard/app/src/main/java/com/glasskb/MainActivity.txt" ]; then
+            mv GlassKeyboard/app/src/main/java/com/glasskb/MainActivity.txt GlassKeyboard/app/src/main/java/com/glasskb/MainActivity.kt
           fi
-      - uses: actions/setup-java@v4
+
+          # Создаем gradle.properties
+          cat << 'EOF' > GlassKeyboard/gradle.properties
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          EOF
+
+          # Создаем settings.gradle.kts
+          cat << 'EOF' > GlassKeyboard/settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "GlassKeyboard"
+          include(":app")
+          EOF
+
+          # Создаем корневой build.gradle.kts
+          cat << 'EOF' > GlassKeyboard/build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.4.0" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.23" apply false
+          }
+          EOF
+
+          # Создаем app/build.gradle.kts
+          cat << 'EOF' > GlassKeyboard/app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.glasskb"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.glasskb"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.appcompat:appcompat:1.6.1")
+              implementation("com.google.android.material:material:1.12.0")
+          }
+          EOF
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
-      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Accept Android SDK Licenses
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+
       - name: Build Debug APK
+        working-directory: GlassKeyboard
         run: gradle assembleDebug --stacktrace
-      - uses: actions/upload-artifact@v4
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: GlassKeyboard-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: GlassKeyboard/app/build/outputs/apk/debug/app-debug.apk
           
